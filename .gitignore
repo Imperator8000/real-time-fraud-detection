@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+
+# Environment secrets
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Spark runtime
+checkpoints/*
+logs/*
+
+# Generated Delta/data layers
+data/bronze/*
+data/silver/*
+data/gold/*
+data/quarantine/*
+
+# Generated models
+models/*
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Generated ML training artifacts
+data/training/*
+
+# Monitoring runtime data
+data/monitoring/*
+
+# Performance benchmark output
+data/benchmarks/*
+
+# Spark event logs
+logs/spark-events/*

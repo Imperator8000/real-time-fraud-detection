@@ -1,0 +1,36 @@
+# Python environments
+.venv/
+venv/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# Runtime data
+data/bronze/
+data/silver/
+data/gold/
+data/quarantine/
+
+# Spark state
+checkpoints/
+
+# Logs
+logs/
+
+# Models
+models/
+
+# Cache
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
