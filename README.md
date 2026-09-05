@@ -26,6 +26,17 @@
 
     ---
 
+    ## Platform Preview
+
+    ![Real-Time Fraud Detection Command Center](docs/screenshots/dashboard-overview.png)
+
+    The dashboard presents the business-facing output of the
+    underlying Kafka → PySpark → Delta Lake → ML streaming platform.
+
+    [View the full demo gallery](docs/demo_gallery.md)
+
+    ---
+
     ## Demo
 
     Start the complete local demonstration:
@@ -709,6 +720,8 @@
     - [Data Contract](docs/data_contract.md)
     - [Demo Guide](docs/demo_guide.md)
     - [Performance Benchmark](docs/performance/benchmark_summary.md)
+    - [Demo Gallery](docs/demo_gallery.md)
+    - [Portfolio / Recruiter Copy](docs/portfolio_pitch.md)
 
     ---
 
