@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+# ============================================================
+# IMPORTS
+# ============================================================
+
+import os
 import sys
+import math
 
 from pathlib import Path
 
@@ -18,31 +24,34 @@ PROJECT_ROOT = (
     .parents[2]
 )
 
-if str(
-    PROJECT_ROOT
-) not in sys.path:
-
+if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(
         0,
-        str(
-            PROJECT_ROOT
-        ),
+        str(PROJECT_ROOT),
     )
 
 
-from src.monitoring.dashboard_snapshot import (
-    build_dashboard_snapshot,
+# ============================================================
+# PUBLIC DEMO MODE
+# ============================================================
+
+PUBLIC_DEMO_MODE = (
+    os.getenv(
+        "DASHBOARD_PUBLIC_DEMO",
+        "false",
+    )
+    .strip()
+    .lower()
+    == "true"
 )
 
 
 # ============================================================
-# PAGE
+# PAGE CONFIGURATION
 # ============================================================
 
 st.set_page_config(
-    page_title=(
-        "Fraud Detection Command Center"
-    ),
+    page_title="Fraud Detection Command Center",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -50,7 +59,7 @@ st.set_page_config(
 
 
 # ============================================================
-# SMALL UI POLISH
+# PAGE STYLING
 # ============================================================
 
 st.markdown(
@@ -77,48 +86,233 @@ st.markdown(
 
 
 # ============================================================
-# CACHE
+# DATA LOADING
 # ============================================================
 
 @st.cache_data(
     ttl=8,
     show_spinner=False,
 )
-def load_snapshot():
+def load_snapshot(
+    public_demo_mode: bool,
+) -> dict:
+    """
+    Load dashboard data.
 
-    return (
+    PUBLIC MODE:
+        Uses deterministic synthetic serving data.
+        Does not require Spark, Kafka, Delta Lake or Java.
+
+    LOCAL MODE:
+        Reads committed Gold Delta tables from the full
+        fraud-detection pipeline.
+    """
+
+    # --------------------------------------------------------
+    # PUBLIC RECRUITER DEMO
+    # --------------------------------------------------------
+
+    if public_demo_mode:
+
+        from src.dashboard.demo_snapshot import (
+            build_demo_snapshot,
+        )
+
+        snapshot = (
+            build_demo_snapshot()
+        )
+
+        snapshot["summary"] = dict(
+            snapshot["summary"]
+        )
+
+        snapshot["summary"]["demo_mode"] = True
+
+        snapshot["summary"]["data_source"] = (
+            "synthetic_portfolio_replay"
+        )
+
+        return snapshot
+
+    # --------------------------------------------------------
+    # LOCAL FULL-PIPELINE MODE
+    # --------------------------------------------------------
+    #
+    # Import lazily so Streamlit Community Cloud does not need
+    # the Delta Lake Python package or local Gold tables.
+    # --------------------------------------------------------
+
+    from src.monitoring.dashboard_snapshot import (
+        build_dashboard_snapshot,
+    )
+
+    snapshot = (
         build_dashboard_snapshot(
             persist=True
         )
     )
+
+    snapshot["summary"] = dict(
+        snapshot["summary"]
+    )
+
+    snapshot["summary"]["demo_mode"] = False
+
+    snapshot["summary"]["data_source"] = (
+        "live_delta"
+    )
+
+    return snapshot
 
 
 # ============================================================
 # FORMATTERS
 # ============================================================
 
-def format_latency(
-    milliseconds: float,
+def safe_number(
+    value,
+) -> float | None:
+    """
+    Convert a numeric value safely.
+
+    Missing, invalid and non-finite values return None rather
+    than being displayed as fabricated zero measurements.
+    """
+
+    if value is None:
+        return None
+
+    try:
+
+        number = float(value)
+
+        if not math.isfinite(number):
+            return None
+
+        return number
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return None
+
+
+def format_count(
+    value,
 ) -> str:
 
-    if milliseconds < 1000:
+    number = safe_number(value)
 
-        return (
-            f"{milliseconds:,.0f} ms"
-        )
+    if number is None:
+        return "N/A"
 
-    return (
-        f"{milliseconds / 1000.0:,.2f} s"
-    )
+    return f"{int(number):,}"
 
 
 def format_money(
-    value: float,
+    value,
 ) -> str:
 
-    return (
-        f"${value:,.2f}"
-    )
+    number = safe_number(value)
+
+    if number is None:
+        return "N/A"
+
+    return f"${number:,.2f}"
+
+
+def format_percentage(
+    value,
+    decimals: int = 2,
+) -> str:
+    """
+    Expects a proportion such as 0.025, not 2.5.
+    """
+
+    number = safe_number(value)
+
+    if number is None:
+        return "N/A"
+
+    return f"{number:.{decimals}%}"
+
+
+def format_probability(
+    value,
+) -> str:
+
+    number = safe_number(value)
+
+    if number is None:
+        return "N/A"
+
+    return f"{number:.3f}"
+
+
+def format_latency(
+    milliseconds,
+) -> str:
+
+    number = safe_number(milliseconds)
+
+    if number is None:
+        return "N/A"
+
+    if number < 1000:
+
+        return f"{number:,.0f} ms"
+
+    return f"{number / 1000.0:,.2f} s"
+
+
+def get_dataframe(
+    snapshot: dict,
+    key: str,
+) -> pd.DataFrame:
+    """
+    Return a copy so dashboard formatting never mutates the
+    cached source DataFrame.
+    """
+
+    value = snapshot.get(key)
+
+    if isinstance(value, pd.DataFrame):
+
+        return value.copy()
+
+    return pd.DataFrame()
+
+
+def format_timestamp(
+    value,
+) -> str:
+
+    if value is None:
+        return "Not available"
+
+    try:
+
+        timestamp = pd.to_datetime(
+            value,
+            utc=True,
+            errors="coerce",
+        )
+
+        if pd.isna(timestamp):
+            return "Not available"
+
+        return timestamp.strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return str(value)
 
 
 # ============================================================
@@ -138,6 +332,20 @@ with st.sidebar:
 
     st.divider()
 
+    if PUBLIC_DEMO_MODE:
+
+        st.info(
+            "Public synthetic replay",
+            icon="🌐",
+        )
+
+    else:
+
+        st.success(
+            "Local Delta Lake mode",
+            icon="✅",
+        )
+
     st.markdown(
         """
         **Architecture**
@@ -153,8 +361,8 @@ with st.sidebar:
 
     st.divider()
 
-    st.markdown(
-        "**Refresh interval:** 10 seconds"
+    st.caption(
+        "Dashboard refresh interval: 10 seconds"
     )
 
     if st.button(
@@ -165,6 +373,16 @@ with st.sidebar:
         st.cache_data.clear()
 
         st.rerun()
+
+    if not PUBLIC_DEMO_MODE:
+
+        st.divider()
+
+        st.link_button(
+            "Open Spark History Server",
+            "http://localhost:18080",
+            use_container_width=True,
+        )
 
 
 # ============================================================
@@ -178,8 +396,9 @@ st.title(
 st.markdown(
     """
     <div class="fraud-subtitle">
-        Live monitoring of transaction behavior, Spark-engineered
-        features, Random Forest inference and hybrid fraud decisions.
+        Monitoring transaction behavior, Spark-engineered
+        features, Random Forest inference and hybrid fraud
+        decisions.
     </div>
     """,
     unsafe_allow_html=True,
@@ -195,71 +414,116 @@ st.markdown(
 )
 def render_dashboard():
 
+    # ========================================================
+    # LOAD DATA
+    # ========================================================
+
     try:
 
         snapshot = (
-            load_snapshot()
-        )
-
-    except (
-        FileNotFoundError,
-        RuntimeError,
-    ) as exc:
-
-        st.info(
-            "The dashboard is running, but no scored "
-            "transaction data is available yet."
-        )
-
-        st.code(
-            "docker compose -f docker\\docker-compose.yml "
-            "--profile demo up -d"
-        )
-
-        st.caption(
-            str(
-                exc
+            load_snapshot(
+                PUBLIC_DEMO_MODE
             )
         )
+
+    except Exception as exc:
+
+        st.error(
+            "The dashboard could not load its data."
+        )
+
+        if PUBLIC_DEMO_MODE:
+
+            st.info(
+                "The public synthetic replay could not be "
+                "initialized. Please refresh the page."
+            )
+
+        else:
+
+            st.info(
+                "The dashboard is running, but the scored "
+                "Gold Delta data may not be available yet."
+            )
+
+            st.code(
+                "docker compose -f docker\\docker-compose.yml "
+                "--profile demo up -d",
+                language="powershell",
+            )
+
+            st.caption(
+                f"{type(exc).__name__}: {exc}"
+            )
 
         return
 
 
-    summary = (
-        snapshot[
-            "summary"
-        ]
+    # ========================================================
+    # EXTRACT SNAPSHOT
+    # ========================================================
+
+    summary = dict(
+        snapshot.get(
+            "summary",
+            {},
+        )
     )
 
     severity_counts = (
-        snapshot[
-            "severity_counts"
-        ]
+        get_dataframe(
+            snapshot,
+            "severity_counts",
+        )
     )
 
     decision_basis_counts = (
-        snapshot[
-            "decision_basis_counts"
-        ]
+        get_dataframe(
+            snapshot,
+            "decision_basis_counts",
+        )
     )
 
     hourly_metrics = (
-        snapshot[
-            "hourly_metrics"
-        ]
+        get_dataframe(
+            snapshot,
+            "hourly_metrics",
+        )
     )
 
     top_alert_users = (
-        snapshot[
-            "top_alert_users"
-        ]
+        get_dataframe(
+            snapshot,
+            "top_alert_users",
+        )
     )
 
     recent_alerts = (
-        snapshot[
-            "recent_alerts"
-        ]
+        get_dataframe(
+            snapshot,
+            "recent_alerts",
+        )
     )
+
+
+    # ========================================================
+    # PUBLIC DEMO DISCLOSURE
+    # ========================================================
+
+    if summary.get(
+        "demo_mode",
+        False,
+    ):
+
+        st.info(
+            "🌐 **Public Portfolio Demo** — This deployment "
+            "uses a deterministic synthetic replay of "
+            "fraud-scoring output so recruiters can explore "
+            "the dashboard without provisioning Kafka and "
+            "Spark. The complete real-time implementation is "
+            "available in the GitHub repository and runs "
+            "locally through Docker Compose."
+        )
 
 
     # ========================================================
@@ -268,7 +532,11 @@ def render_dashboard():
 
     st.caption(
         "Snapshot refreshed: "
-        f"{summary['snapshot_created_at_utc']}"
+        + format_timestamp(
+            summary.get(
+                "snapshot_created_at_utc"
+            )
+        )
     )
 
 
@@ -288,28 +556,46 @@ def render_dashboard():
 
     metric_1.metric(
         "Transactions",
-        f"{summary['transactions_processed']:,}",
+        format_count(
+            summary.get(
+                "transactions_processed"
+            )
+        ),
     )
 
     metric_2.metric(
         "Fraud Alerts",
-        f"{summary['fraud_alerts']:,}",
+        format_count(
+            summary.get(
+                "fraud_alerts"
+            )
+        ),
     )
 
     metric_3.metric(
         "Fraud Rate",
-        f"{summary['fraud_rate']:.2%}",
+        format_percentage(
+            summary.get(
+                "fraud_rate"
+            )
+        ),
     )
 
     metric_4.metric(
         "Critical Alerts",
-        f"{summary['critical_alerts']:,}",
+        format_count(
+            summary.get(
+                "critical_alerts"
+            )
+        ),
     )
 
     metric_5.metric(
         "Avg ML Probability",
-        (
-            f"{summary['average_ml_fraud_probability']:.3f}"
+        format_probability(
+            summary.get(
+                "average_ml_fraud_probability"
+            )
         ),
     )
 
@@ -331,43 +617,45 @@ def render_dashboard():
     metric_6.metric(
         "Average Transaction",
         format_money(
-            summary[
+            summary.get(
                 "average_transaction_value"
-            ]
+            )
         ),
     )
 
     metric_7.metric(
         "P95 Transaction",
         format_money(
-            summary[
+            summary.get(
                 "p95_transaction_amount"
-            ]
+            )
         ),
     )
 
     metric_8.metric(
         "Window Coverage",
-        (
-            f"{summary['window_feature_coverage']:.2%}"
+        format_percentage(
+            summary.get(
+                "window_feature_coverage"
+            )
         ),
     )
 
     metric_9.metric(
         "Avg Event→Score",
         format_latency(
-            summary[
+            summary.get(
                 "average_event_to_score_latency_ms"
-            ]
+            )
         ),
     )
 
     metric_10.metric(
         "P95 Event→Score",
         format_latency(
-            summary[
+            summary.get(
                 "p95_event_to_score_latency_ms"
-            ]
+            )
         ),
     )
 
@@ -376,7 +664,7 @@ def render_dashboard():
 
 
     # ========================================================
-    # TABS
+    # DASHBOARD TABS
     # ========================================================
 
     (
@@ -397,7 +685,7 @@ def render_dashboard():
 
 
     # ========================================================
-    # OVERVIEW
+    # TAB 1 — OVERVIEW
     # ========================================================
 
     with overview_tab:
@@ -406,7 +694,16 @@ def render_dashboard():
             "Transaction & Fraud Trend"
         )
 
-        if not hourly_metrics.empty:
+        if (
+            not hourly_metrics.empty
+            and {
+                "hour",
+                "transactions",
+                "alerts",
+            }.issubset(
+                hourly_metrics.columns
+            )
+        ):
 
             hourly_chart = (
                 hourly_metrics[
@@ -424,11 +721,21 @@ def render_dashboard():
             ] = pd.to_datetime(
                 hourly_chart[
                     "hour"
-                ]
+                ],
+                utc=True,
+                errors="coerce",
             )
 
             hourly_chart = (
                 hourly_chart
+                .dropna(
+                    subset=[
+                        "hour"
+                    ]
+                )
+                .sort_values(
+                    "hour"
+                )
                 .set_index(
                     "hour"
                 )
@@ -441,16 +748,24 @@ def render_dashboard():
                         "alerts",
                     ]
                 ],
-
                 height=350,
+            )
+
+            st.caption(
+                "Hourly transaction volume and final fraud "
+                "alerts, grouped by transaction event time."
             )
 
         else:
 
             st.info(
-                "No hourly trend data yet."
+                "No hourly trend data is available yet."
             )
 
+
+        # ----------------------------------------------------
+        # SEVERITY AND DECISION CHARTS
+        # ----------------------------------------------------
 
         left, right = (
             st.columns(
@@ -464,9 +779,17 @@ def render_dashboard():
                 "Severity Distribution"
             )
 
-            if not severity_counts.empty:
+            if (
+                not severity_counts.empty
+                and {
+                    "severity",
+                    "transaction_count",
+                }.issubset(
+                    severity_counts.columns
+                )
+            ):
 
-                chart_df = (
+                severity_chart = (
                     severity_counts
                     .set_index(
                         "severity"
@@ -474,19 +797,23 @@ def render_dashboard():
                 )
 
                 st.bar_chart(
-                    chart_df[
+                    severity_chart[
                         [
                             "transaction_count"
                         ]
                     ],
-
                     height=330,
+                )
+
+                st.caption(
+                    "Distribution of final risk severity "
+                    "across scored transactions."
                 )
 
             else:
 
                 st.info(
-                    "No severity data yet."
+                    "No severity data is available yet."
                 )
 
 
@@ -496,7 +823,15 @@ def render_dashboard():
                 "Fraud Decision Basis"
             )
 
-            if not decision_basis_counts.empty:
+            if (
+                not decision_basis_counts.empty
+                and {
+                    "decision_basis",
+                    "alert_count",
+                }.issubset(
+                    decision_basis_counts.columns
+                )
+            ):
 
                 decision_chart = (
                     decision_basis_counts
@@ -511,19 +846,23 @@ def render_dashboard():
                             "alert_count"
                         ]
                     ],
-
                     height=330,
+                )
+
+                st.caption(
+                    "Primary decision paths for transactions "
+                    "that received a final fraud flag."
                 )
 
             else:
 
                 st.info(
-                    "No final fraud alerts yet."
+                    "No final fraud alerts are available yet."
                 )
 
 
     # ========================================================
-    # ALERT ANALYSIS
+    # TAB 2 — ALERT ANALYSIS
     # ========================================================
 
     with alert_tab:
@@ -543,45 +882,59 @@ def render_dashboard():
 
         rule_column.metric(
             "Rule Anomalies",
-            (
-                f"{summary['rule_anomaly_count']:,}"
+            format_count(
+                summary.get(
+                    "rule_anomaly_count"
+                )
             ),
         )
 
         ml_column.metric(
             "ML High Confidence",
-            (
-                f"{summary['ml_high_confidence_alerts']:,}"
+            format_count(
+                summary.get(
+                    "ml_high_confidence_alerts"
+                )
             ),
         )
 
         hybrid_column.metric(
             "Rule + ML",
-            (
-                f"{summary['hybrid_confirmation_alerts']:,}"
+            format_count(
+                summary.get(
+                    "hybrid_confirmation_alerts"
+                )
             ),
         )
 
         critical_rule_column.metric(
             "Critical Rule Escalation",
-            (
-                f"{summary['critical_rule_alerts']:,}"
+            format_count(
+                summary.get(
+                    "critical_rule_alerts"
+                )
             ),
         )
 
         st.markdown(
             """
-            The final decision engine can escalate through:
-
-            - high-confidence Random Forest prediction,
-            - rule anomaly confirmed by ML,
-            - or an exceptionally high rule score.
+            The final fraud decision engine combines
+            deterministic behavioral rules with Random Forest
+            probabilities. A transaction may be escalated
+            through high-confidence ML detection, rule-plus-ML
+            confirmation, or an exceptionally high rule score.
             """
+        )
+
+        st.caption(
+            "Rule anomalies and final decision categories "
+            "are different measures and should not be added "
+            "together as independent alert totals."
         )
 
 
     # ========================================================
-    # USER RISK
+    # TAB 3 — USER RISK
     # ========================================================
 
     with user_tab:
@@ -596,43 +949,80 @@ def render_dashboard():
                 top_alert_users.copy()
             )
 
-            display_users[
-                "maximum_ml_probability"
-            ] = (
-                display_users[
-                    "maximum_ml_probability"
-                ]
-                .round(
-                    4
-                )
-            )
+            # -----------------------------------------------
+            # FORMAT NUMERIC COLUMNS
+            # -----------------------------------------------
 
-            display_users[
-                "total_alert_amount"
-            ] = (
-                display_users[
-                    "total_alert_amount"
-                ]
-                .round(
-                    2
+            for column in [
+                "maximum_ml_probability",
+                "total_alert_amount",
+            ]:
+
+                if column in display_users.columns:
+
+                    display_users[
+                        column
+                    ] = pd.to_numeric(
+                        display_users[
+                            column
+                        ],
+                        errors="coerce",
+                    ).round(
+                        4
+                        if column
+                        ==
+                        "maximum_ml_probability"
+                        else 2
+                    )
+
+            column_config = {}
+
+            if (
+                "maximum_ml_probability"
+                in display_users.columns
+            ):
+
+                column_config[
+                    "maximum_ml_probability"
+                ] = st.column_config.NumberColumn(
+                    "Max ML Probability",
+                    format="%.4f",
                 )
-            )
+
+            if (
+                "total_alert_amount"
+                in display_users.columns
+            ):
+
+                column_config[
+                    "total_alert_amount"
+                ] = st.column_config.NumberColumn(
+                    "Total Alert Amount",
+                    format="$%.2f",
+                )
 
             st.dataframe(
                 display_users,
                 use_container_width=True,
                 hide_index=True,
+                column_config=column_config,
+            )
+
+            st.caption(
+                "Ranked by final fraud-alert count. "
+                "User identifiers are synthetic in the "
+                "public demonstration."
             )
 
         else:
 
             st.info(
-                "No alerting users yet."
+                "No alerting users are available yet."
             )
 
 
     # ========================================================
-    # RECENT ALERTS
+    # TAB 4 — RECENT ALERTS
     # ========================================================
 
     with recent_tab:
@@ -643,50 +1033,245 @@ def render_dashboard():
 
         if not recent_alerts.empty:
 
-            display_alerts = (
-                recent_alerts.copy()
-            )
+            # ------------------------------------------------
+            # SEVERITY FILTER
+            # ------------------------------------------------
 
-            preferred_columns = [
-                column
-                for column in [
-                    "processing_timestamp",
-                    "transaction_id",
-                    "user_id",
-                    "amount",
-                    "amount_deviation_ratio",
-                    "transactions_last_10m",
-                    "new_device_flag",
-                    "fraud_rule_score",
-                    "ml_fraud_probability",
-                    "final_fraud_severity",
-                    "final_decision_basis",
-                    "fraud_reasons",
-                ]
-                if column
-                in display_alerts.columns
+            severity_order = [
+                "CRITICAL",
+                "HIGH",
+                "MEDIUM",
+                "LOW",
             ]
 
-            display_alerts = (
-                display_alerts[
-                    preferred_columns
+            if (
+                "final_fraud_severity"
+                in recent_alerts.columns
+            ):
+
+                available_values = (
+                    recent_alerts[
+                        "final_fraud_severity"
+                    ]
+                    .dropna()
+                    .astype(
+                        str
+                    )
+                    .unique()
+                    .tolist()
+                )
+
+                available_severities = [
+                    "ALL",
+                    *[
+                        severity
+                        for severity
+                        in severity_order
+                        if severity
+                        in available_values
+                    ],
+                    *sorted(
+                        severity
+                        for severity
+                        in available_values
+                        if severity
+                        not in severity_order
+                    ),
                 ]
+
+            else:
+
+                available_severities = [
+                    "ALL"
+                ]
+
+
+            selected_severity = (
+                st.selectbox(
+                    "Filter by severity",
+                    available_severities,
+                    key=(
+                        "recent_alert_"
+                        "severity_filter"
+                    ),
+                )
             )
 
             if (
-                "ml_fraud_probability"
+                selected_severity
+                !=
+                "ALL"
+            ):
+
+                recent_alerts = (
+                    recent_alerts[
+                        recent_alerts[
+                            "final_fraud_severity"
+                        ]
+                        ==
+                        selected_severity
+                    ]
+                    .copy()
+                )
+
+
+            # ------------------------------------------------
+            # DISPLAY COLUMNS
+            # ------------------------------------------------
+
+            preferred_columns = [
+                "processing_timestamp",
+                "transaction_id",
+                "user_id",
+                "amount",
+                "amount_deviation_ratio",
+                "transactions_last_10m",
+                "new_device_flag",
+                "fraud_rule_score",
+                "ml_fraud_probability",
+                "final_fraud_severity",
+                "final_decision_basis",
+                "fraud_reasons",
+            ]
+
+            display_columns = [
+                column
+                for column
+                in preferred_columns
+                if column
+                in recent_alerts.columns
+            ]
+
+            display_alerts = (
+                recent_alerts[
+                    display_columns
+                ]
+                .copy()
+            )
+
+
+            # ------------------------------------------------
+            # FORMAT TIMESTAMPS
+            # ------------------------------------------------
+
+            if (
+                "processing_timestamp"
                 in display_alerts.columns
             ):
 
                 display_alerts[
-                    "ml_fraud_probability"
+                    "processing_timestamp"
+                ] = pd.to_datetime(
+                    display_alerts[
+                        "processing_timestamp"
+                    ],
+                    utc=True,
+                    errors="coerce",
+                )
+
+
+            # ------------------------------------------------
+            # FORMAT NUMERIC VALUES
+            # ------------------------------------------------
+
+            for column, decimals in [
+                ("amount", 2),
+                ("amount_deviation_ratio", 2),
+                ("ml_fraud_probability", 4),
+            ]:
+
+                if column in display_alerts.columns:
+
+                    display_alerts[
+                        column
+                    ] = pd.to_numeric(
+                        display_alerts[
+                            column
+                        ],
+                        errors="coerce",
+                    ).round(
+                        decimals
+                    )
+
+
+            # ------------------------------------------------
+            # FORMAT FRAUD REASONS
+            # ------------------------------------------------
+
+            if (
+                "fraud_reasons"
+                in display_alerts.columns
+            ):
+
+                def format_reasons(
+                    value,
+                ) -> str:
+
+                    if isinstance(
+                        value,
+                        (
+                            list,
+                            tuple,
+                            set,
+                        ),
+                    ):
+
+                        return ", ".join(
+                            str(item)
+                            for item
+                            in value
+                        )
+
+                    if value is None:
+
+                        return ""
+
+                    try:
+
+                        if pd.isna(value):
+
+                            return ""
+
+                    except (
+                        TypeError,
+                        ValueError,
+                    ):
+
+                        pass
+
+                    return str(
+                        value
+                    )
+
+
+                display_alerts[
+                    "fraud_reasons"
                 ] = (
                     display_alerts[
-                        "ml_fraud_probability"
+                        "fraud_reasons"
                     ]
-                    .round(
-                        4
+                    .apply(
+                        format_reasons
                     )
+                )
+
+
+            # ------------------------------------------------
+            # TABLE CONFIGURATION
+            # ------------------------------------------------
+
+            column_config = {}
+
+            if (
+                "amount"
+                in display_alerts.columns
+            ):
+
+                column_config[
+                    "amount"
+                ] = st.column_config.NumberColumn(
+                    "Amount",
+                    format="$%.2f",
                 )
 
             if (
@@ -694,15 +1279,23 @@ def render_dashboard():
                 in display_alerts.columns
             ):
 
-                display_alerts[
+                column_config[
                     "amount_deviation_ratio"
-                ] = (
-                    display_alerts[
-                        "amount_deviation_ratio"
-                    ]
-                    .round(
-                        2
-                    )
+                ] = st.column_config.NumberColumn(
+                    "Historical Ratio",
+                    format="%.2f",
+                )
+
+            if (
+                "ml_fraud_probability"
+                in display_alerts.columns
+            ):
+
+                column_config[
+                    "ml_fraud_probability"
+                ] = st.column_config.NumberColumn(
+                    "ML Probability",
+                    format="%.4f",
                 )
 
             st.dataframe(
@@ -710,6 +1303,17 @@ def render_dashboard():
                 use_container_width=True,
                 hide_index=True,
                 height=500,
+                column_config=column_config,
+            )
+
+            st.caption(
+                f"Showing {len(display_alerts):,} alert rows. "
+                "The public version contains synthetic "
+                "demonstration records."
+                if PUBLIC_DEMO_MODE
+                else
+                f"Showing {len(display_alerts):,} alert rows "
+                "from the committed Gold serving data."
             )
 
         else:
@@ -720,7 +1324,7 @@ def render_dashboard():
 
 
     # ========================================================
-    # ENGINEERING HEALTH
+    # TAB 5 — ENGINEERING HEALTH
     # ========================================================
 
     with engineering_tab:
@@ -739,48 +1343,97 @@ def render_dashboard():
 
         engineering_1.metric(
             "Window Feature Coverage",
-            (
-                f"{summary['window_feature_coverage']:.2%}"
+            format_percentage(
+                summary.get(
+                    "window_feature_coverage"
+                )
             ),
         )
 
         engineering_2.metric(
             "Unique Users",
-            (
-                f"{summary['unique_users']:,}"
+            format_count(
+                summary.get(
+                    "unique_users"
+                )
             ),
         )
 
         engineering_3.metric(
             "P95 Event→Score Latency",
             format_latency(
-                summary[
+                summary.get(
                     "p95_event_to_score_latency_ms"
-                ]
+                )
             ),
         )
 
+        st.divider()
+
         st.markdown(
             """
-            **Interpretation**
+            **Metric interpretation**
 
-            `Window Feature Coverage` measures whether each
-            transaction was successfully enriched with its
+            **Window feature coverage** measures the proportion
+            of scored transactions that were enriched with an
             applicable 10-minute behavioral window.
 
-            `Event→Score Latency` measures the elapsed event-time
-            to final-decision time. It can include deliberately
-            late simulator events and Kafka backlog, so Spark
-            trigger execution latency should still be examined
-            separately through the Structured Streaming metrics
-            and Spark History Server.
+            **Event-to-score latency** measures elapsed time
+            from the transaction's event timestamp to its final
+            scoring timestamp. It may include intentional
+            simulator lateness, Kafka backlog and streaming
+            processing delay.
+
+            It is not the same as Spark trigger execution
+            latency. The latter is measured separately through
+            `StreamingQueryProgress` and Spark execution logs.
             """
         )
 
-        st.markdown(
-            "**Spark History Server:** "
-            "`http://localhost:18080`"
-        )
+        if PUBLIC_DEMO_MODE:
 
+            st.warning(
+                "Engineering metrics shown in this public "
+                "replay are illustrative synthetic values. "
+                "They are not live infrastructure-health "
+                "measurements or performance benchmark results."
+            )
+
+            st.markdown(
+                """
+                The full repository includes:
+
+                - Structured Streaming progress listeners
+                - State-store row and memory metrics
+                - Watermark-drop monitoring
+                - Controlled shuffle-partition benchmarks
+                - Spark event logs
+                - Spark History Server
+                - Checkpoint recovery tests
+                """
+            )
+
+        else:
+
+            st.success(
+                "These metrics are derived from committed "
+                "local Gold Delta outputs."
+            )
+
+            st.link_button(
+                "Open Spark History Server",
+                "http://localhost:18080",
+            )
+
+            st.caption(
+                "Spark History Server provides jobs, stages, "
+                "tasks, executors, shuffle statistics and "
+                "persisted execution plans."
+            )
+
+
+# ============================================================
+# RENDER
+# ============================================================
 
 render_dashboard()
