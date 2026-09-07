@@ -175,6 +175,10 @@ def normalize_git_path(
     )
 
 
+# ============================================================
+# FORBIDDEN PATH CHECK
+# ============================================================
+
 def is_forbidden_tracked_path(
     path: str,
 ) -> bool:
@@ -185,25 +189,63 @@ def is_forbidden_tracked_path(
         )
     )
 
-    for prefix in (
+    for forbidden_path in (
         FORBIDDEN_TRACKED_PREFIXES
     ):
 
-        if (
-            normalized
-            ==
-            prefix.rstrip(
-                "/"
-            )
+        # ----------------------------------------------------
+        # DIRECTORY RULE
+        # ----------------------------------------------------
+        #
+        # Entries ending in "/" represent directories.
+        #
+        # Example:
+        #
+        # data/gold/
+        #
+        # matches:
+        #
+        # data/gold/scored_transactions/...
+        #
+        # ----------------------------------------------------
+
+        if forbidden_path.endswith(
+            "/"
         ):
 
-            return True
+            if normalized.startswith(
+                forbidden_path
+            ):
 
-        if normalized.startswith(
-            prefix
-        ):
+                return True
 
-            return True
+        # ----------------------------------------------------
+        # EXACT FILE RULE
+        # ----------------------------------------------------
+        #
+        # Entries without "/" represent exact filenames.
+        #
+        # This is important for:
+        #
+        # .env          -> BLOCKED
+        # .env.example  -> ALLOWED
+        #
+        # The previous implementation incorrectly used:
+        #
+        # ".env.example".startswith(".env")
+        #
+        # which returned True and caused .env.example to be
+        # incorrectly treated as secret/runtime data.
+        #
+        # ----------------------------------------------------
+
+        else:
+
+            if normalized == (
+                forbidden_path
+            ):
+
+                return True
 
     return False
 
@@ -355,7 +397,7 @@ def check_git_repository() -> list[str]:
 
         passes.append(
             "No forbidden runtime directories "
-            "are tracked by Git."
+            "or secret-sensitive files are tracked by Git."
         )
 
     return tracked_files
@@ -368,6 +410,10 @@ def check_git_repository() -> list[str]:
 def check_environment_files(
     tracked_files: list[str],
 ) -> None:
+
+    # --------------------------------------------------------
+    # PRIVATE .env MUST NOT BE TRACKED
+    # --------------------------------------------------------
 
     if ".env" in tracked_files:
 
@@ -382,6 +428,10 @@ def check_environment_files(
             ".env is not tracked by Git."
         )
 
+    # --------------------------------------------------------
+    # PUBLIC .env.example SHOULD EXIST
+    # --------------------------------------------------------
+
     env_example = (
         PROJECT_ROOT
         / ".env.example"
@@ -394,6 +444,28 @@ def check_environment_files(
         )
 
         return
+
+    # --------------------------------------------------------
+    # .env.example SHOULD BE TRACKED
+    # --------------------------------------------------------
+
+    if ".env.example" in tracked_files:
+
+        passes.append(
+            ".env.example is correctly tracked by Git."
+        )
+
+    else:
+
+        warnings.append(
+            ".env.example exists but is not tracked by Git. "
+            "It should normally be included in the public "
+            "repository as the configuration template."
+        )
+
+    # --------------------------------------------------------
+    # CHECK TEMPLATE FOR POSSIBLE REAL SECRETS
+    # --------------------------------------------------------
 
     text = (
         env_example.read_text(
