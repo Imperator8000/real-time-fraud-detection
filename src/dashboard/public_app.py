@@ -16,15 +16,10 @@ PROJECT_ROOT = (
     .parents[2]
 )
 
-if str(
-    PROJECT_ROOT
-) not in sys.path:
-
+if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(
         0,
-        str(
-            PROJECT_ROOT
-        ),
+        str(PROJECT_ROOT),
     )
 
 
@@ -32,9 +27,7 @@ if str(
 # FORCE PUBLIC DEMO MODE
 # ============================================================
 
-os.environ[
-    "DASHBOARD_PUBLIC_DEMO"
-] = "true"
+os.environ["DASHBOARD_PUBLIC_DEMO"] = "true"
 
 
 # ============================================================
